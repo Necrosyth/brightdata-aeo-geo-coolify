@@ -108,6 +108,25 @@ function shouldRun(state) {
   return elapsed >= intervalMs;
 }
 
+/**
+ * Update lastScheduledRun in Neon BEFORE triggering the batch.
+ * This prevents the worker from re-triggering on every poll cycle
+ * if the batch fails or times out (which keeps credits safe).
+ */
+async function markBatchStarted() {
+  if (!pool) return;
+  const now = new Date().toISOString();
+  try {
+    await pool.query(
+      `UPDATE public.kv_store SET value = jsonb_set(value, '{lastScheduledRun}', $1::jsonb, true) WHERE key = $2`,
+      [JSON.stringify(now), STORAGE_KEY],
+    );
+    log.debug(`Marked lastScheduledRun = ${now}`);
+  } catch (err) {
+    log.warn(`Failed to mark batch start (will retry): ${err.message}`);
+  }
+}
+
 // ── Trigger batch ──────────────────────────────────────────────
 async function triggerBatch() {
   const url = `${BASE_URL}/api/cron/run-all?workspace=${WORKSPACE}`;
@@ -174,6 +193,9 @@ async function tick() {
         `Schedule triggered: running batch (interval=${state.scheduleIntervalMs}ms)`,
       );
       lastRunTime = Date.now();
+      // Mark start in Neon BEFORE trigger so a timeout doesn't cause
+      // infinite re-triggers on every poll cycle
+      await markBatchStarted();
       await triggerBatch();
       consecutiveFailures = 0;
     }

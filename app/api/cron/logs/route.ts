@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getLogs, clearLogs } from "@/lib/server/log-buffer";
+import { getLogs, clearLogs, pushLog } from "@/lib/server/log-buffer";
+import { z } from "zod";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,7 +16,10 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
   const limitParam = req.nextUrl.searchParams.get("limit");
-  const limit = Math.min(Math.max(1, parseInt(limitParam || "100", 10) || 100), 200);
+  const limit = Math.min(
+    Math.max(1, parseInt(limitParam || "100", 10) || 100),
+    200,
+  );
 
   const allLogs = getLogs();
   const logs = allLogs.slice(0, limit);
@@ -25,6 +29,34 @@ export async function GET(req: NextRequest) {
     total: allLogs.length,
     returned: logs.length,
   });
+}
+
+/**
+ * POST /api/cron/logs
+ *
+ * Push a log entry to the buffer. Used by the dashboard's "Run Now"
+ * button so its results also appear in the Logs tab.
+ */
+const PushSchema = z.object({
+  level: z.enum(["info", "warn", "error"]),
+  message: z.string().min(1),
+  details: z.string().optional(),
+  totalRuns: z.number().optional(),
+  driftAlerts: z.number().optional(),
+  errors: z.number().optional(),
+  elapsedSeconds: z.number().optional(),
+});
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const parsed = PushSchema.parse(body);
+    pushLog(parsed);
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Invalid payload";
+    return NextResponse.json({ error: msg }, { status: 400 });
+  }
 }
 
 /**

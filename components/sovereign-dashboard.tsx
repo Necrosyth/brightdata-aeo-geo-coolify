@@ -584,6 +584,24 @@ export function SovereignDashboard({
       `Auto-run complete: ${allRuns.length} results.${newAlerts.length > 0 ? ` ${newAlerts.length} drift alert${newAlerts.length > 1 ? "s" : ""} triggered.` : ""}`,
     );
     setBusy(false);
+
+    // Push a log entry so it appears in the Logs tab
+    const startTs = s.lastScheduledRun
+      ? new Date(s.lastScheduledRun).getTime()
+      : Date.now();
+    fetch("/api/cron/logs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        level: allRuns.length > 0 ? "info" : "warn",
+        message: `Manual run: ${allRuns.length} result(s) across ${prompts.length} prompt(s) × ${providers.length} provider(s)`,
+        totalRuns: allRuns.length,
+        driftAlerts: newAlerts.length,
+        errors: 0,
+        elapsedSeconds: Math.round((Date.now() - startTs) / 1000),
+      }),
+    }).catch(() => {});
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
