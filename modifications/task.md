@@ -1,0 +1,28 @@
+# Task List
+
+- [x] Configuration & Database
+  - [x] Update env variables in `.env`
+  - [x] Add model configuration metadata list in `lib/server/models-config.ts`
+  - [x] Implement automatic table initialization in `lib/server/neon.ts`
+  - [x] Update `lib/client/cloud-mode.ts` to enable cloud by default and update UI labels
+  - [x] Fix state API route import path compilation error in `app/api/state/route.ts`
+- [/] API Routes & LLM Clients
+  - [/] Implement unified `callLLM()` helper supporting OpenCode Zen and NVIDIA integrate endpoints in `lib/server/openrouter-sro.ts`
+  - [/] Refactor `app/api/analyze/route.ts` to use `callLLM()`
+  - [/] Refactor `app/api/site-context/route.ts` to use `callLLM()`
+  - [/] Refactor `app/api/sro-analyze/route.ts` to pass through `selectedModel`
+  - [/] Refactor `app/api/bulk-sro/route.ts` to pass through `selectedModel`
+- [ ] Authentication System
+  - [ ] Create Next.js cookie check middleware in `middleware.ts`
+  - [ ] Implement login API route `app/api/auth/login/route.ts`
+  - [ ] Implement logout API route `app/api/auth/logout/route.ts`
+  - [ ] Create beautiful glassmorphism login interface in `app/login/page.tsx`
+- [ ] Frontend Updates
+  - [ ] Add `selectedModel` to AppState types and default state
+  - [ ] Add model picker dropdown to `ProjectSettingsTab`
+  - [ ] Pass `selectedModel` to `SROAnalysisTab` and API calls
+  - [ ] Add Logout button to the dashboard header toolbar
+  - [ ] Remove "Built by Daniel Shashko" footer credit
+  - [ ] Update documentation tab for the new env vars
+- [ ] Verification & Build
+  - [ ] Build the Next.js project to verify no compilation errors
