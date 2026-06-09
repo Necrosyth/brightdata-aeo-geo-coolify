@@ -11,7 +11,11 @@ import { NextRequest, NextResponse } from "next/server";
 const PUBLIC_ROUTES = ["/login", "/_next", "/favicon.ico"];
 
 // API routes that are public (auth endpoints themselves)
-const PUBLIC_API_PREFIXES = ["/api/auth/login", "/api/auth/logout"];
+const PUBLIC_API_PREFIXES = [
+  "/api/auth/login",
+  "/api/auth/logout",
+  "/api/cron",
+];
 
 function isPublicRoute(pathname: string): boolean {
   if (PUBLIC_ROUTES.some((r) => pathname.startsWith(r))) return true;
@@ -70,7 +74,9 @@ async function isValidToken(req: NextRequest): Promise<boolean> {
 }
 
 function getSecret(): string {
-  return process.env.AUTH_SECRET || "sovereign-default-secret-change-in-production";
+  return (
+    process.env.AUTH_SECRET || "sovereign-default-secret-change-in-production"
+  );
 }
 
 async function hmacSha256(data: string, secret: string): Promise<string> {

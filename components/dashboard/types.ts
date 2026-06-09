@@ -107,6 +107,19 @@ export type DriftAlert = {
   dismissed: boolean;
 };
 
+/** A log entry from the server-side scheduler worker */
+export type SchedulerLogEntry = {
+  id: string;
+  timestamp: string;
+  level: "info" | "warn" | "error";
+  message: string;
+  details?: string;
+  totalRuns?: number;
+  driftAlerts?: number;
+  errors?: number;
+  elapsedSeconds?: number;
+};
+
 /** Schedule interval value in milliseconds */
 export type ScheduleInterval = 3600000 | 21600000 | 43200000 | 86400000;
 
@@ -169,6 +182,7 @@ export type AppState = {
   lastScheduledRun: string | null;
   /** Drift alerts from auto-runs */
   driftAlerts: DriftAlert[];
+
   /** Selected LLM model for SRO & analysis */
   selectedModel?: string;
 };
@@ -186,6 +200,7 @@ export const tabs = [
   "AEO Audit",
   "SRO Analysis",
   "Automation",
+  "Logs",
   "Website Data",
   "Documentation",
 ] as const;

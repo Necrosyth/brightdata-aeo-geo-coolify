@@ -32,6 +32,13 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 
+# Copy scheduler worker and startup script
+COPY scripts/scheduler-worker.mjs ./scripts/scheduler-worker.mjs
+COPY start.sh ./start.sh
+
+# Make start.sh executable
+RUN chmod +x start.sh
+
 # Set correct permissions
 RUN chown -R nextjs:nodejs /app
 
@@ -43,9 +50,9 @@ ENV PORT=3040
 ENV HOSTNAME="0.0.0.0"
 ENV NODE_ENV=production
 
-# Health check
+# Health check (probes the Next.js server, not the worker)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3040/ || exit 1
 
-# Start the Next.js server
-CMD ["node", "server.js"]
+# Start both Next.js server and scheduler worker
+CMD ["/bin/sh", "start.sh"]

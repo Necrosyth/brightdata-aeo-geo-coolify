@@ -27,6 +27,7 @@ services:
       - DASHBOARD_USERNAME
       - DASHBOARD_PASSWORD
       - AUTH_SECRET
+      - CRON_SECRET
       - NEXT_PUBLIC_DEMO_ONLY
     restart: unless-stopped
     logging:
