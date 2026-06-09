@@ -1,5 +1,4 @@
 version: "3.8"
-
 services:
   app:
     build:
@@ -9,29 +8,20 @@ services:
     ports:
       - "3040:3040"
     environment:
-      # ── Required: at least one LLM API key ──
       - OPENCODE_ZEN_API_KEY=${OPENCODE_ZEN_API_KEY}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - BRIGHT_DATA_KEY=${BRIGHT_DATA_KEY}
-
-      # ── Bright Data dataset IDs ──
       - BRIGHT_DATA_DATASET_CHATGPT=${BRIGHT_DATA_DATASET_CHATGPT}
       - BRIGHT_DATA_DATASET_PERPLEXITY=${BRIGHT_DATA_DATASET_PERPLEXITY}
       - BRIGHT_DATA_DATASET_COPILOT=${BRIGHT_DATA_DATASET_COPILOT}
       - BRIGHT_DATA_DATASET_GEMINI=${BRIGHT_DATA_DATASET_GEMINI}
       - BRIGHT_DATA_DATASET_GOOGLE_AI=${BRIGHT_DATA_DATASET_GOOGLE_AI}
       - BRIGHT_DATA_DATASET_GROK=${BRIGHT_DATA_DATASET_GROK}
-
-      # ── Database (optional — enables cloud sync) ──
       - DATABASE_URL=${DATABASE_URL}
-
-      # ── Authentication ──
       - DASHBOARD_USERNAME=${DASHBOARD_USERNAME:-admin}
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-admin}
       - AUTH_SECRET=${AUTH_SECRET:-sovereign-default-secret-change-in-production}
-
-      # ── Demo mode ──
       - NEXT_PUBLIC_DEMO_ONLY=${NEXT_PUBLIC_DEMO_ONLY:-false}
     restart: unless-stopped
     logging:
@@ -39,3 +29,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    networks: # 👈 added
+      - coolify
+
+networks: # 👈 added
+  coolify:
+    external: true
