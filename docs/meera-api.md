@@ -125,7 +125,28 @@ Full visibility analytics data — all scrape runs, scores, drift alerts, and co
       "sentiment": "neutral",
       "summary": "Competitor summary text"
     }
-  ]
+  ],
+  "charts": {
+    "visibilityTrend": [
+      { "day": "2026-06-08", "visibility": 65 },
+      { "day": "2026-06-09", "visibility": 70 }
+    ],
+    "sentimentDistribution": {
+      "positive": 10,
+      "neutral": 20,
+      "negative": 5,
+      "not-mentioned": 13
+    },
+    "topMovers": [
+      {
+        "prompt": "What are the top 3 reasons to choose {brand} based on trusted sources?",
+        "provider": "chatgpt",
+        "currentScore": 85,
+        "previousScore": 70,
+        "delta": 15
+      }
+    ]
+  }
 }
 ```
 
@@ -173,7 +194,12 @@ AEO audit reports and SRO (Search Result Optimization) analysis data.
     }
   },
   "sro": { /* SRO analysis results if available */ },
-  "citationOpportunities": [ /* citation gap analysis */ ]
+  "citationOpportunities": [
+    {
+      "domain": "competitorhub.com",
+      "description": "Competitor cited but \"Your Brand\" is not mentioned."
+    }
+  ]
 }
 ```
 

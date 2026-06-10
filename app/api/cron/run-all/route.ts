@@ -24,6 +24,42 @@ const ProviderEnum = z.enum([
   "grok",
 ]);
 
+async function isValidDashboardSession(req: NextRequest): Promise<boolean> {
+  const token = req.cookies.get("auth_token")?.value;
+  if (!token) return false;
+
+  try {
+    const secret = process.env.AUTH_SECRET || "sovereign-default-secret-change-in-production";
+    const parts = token.split(".");
+    if (parts.length !== 2) return false;
+
+    const [payloadB64, signatureB64] = parts;
+    
+    // HMAC SHA-256 validation
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(payloadB64));
+    const expectedSig = Buffer.from(sig).toString("base64url");
+
+    if (signatureB64 !== expectedSig) return false;
+
+    const payloadJson = Buffer.from(payloadB64, "base64url").toString("utf-8");
+    const payload = JSON.parse(payloadJson);
+
+    if (payload.exp && payload.exp < Date.now()) return false;
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * POST /api/cron/run-all
  *
@@ -34,6 +70,7 @@ const ProviderEnum = z.enum([
  *
  * Auth: Requires CRON_SECRET env var as Bearer token or ?secret= param.
  *       If CRON_SECRET is not set, the endpoint is unprotected (dev mode).
+ *       Also allows dashboard session authenticated requests (auth_token cookie).
  *
  * Query params:
  *   workspace  - workspace ID (default: "default")
@@ -49,7 +86,10 @@ export async function POST(req: NextRequest) {
       .get("authorization")
       ?.replace(/^Bearer\s+/i, "");
     const querySecret = req.nextUrl.searchParams.get("secret");
-    if (authHeader !== cronSecret && querySecret !== cronSecret) {
+    
+    const isDashboardUser = await isValidDashboardSession(req);
+    
+    if (authHeader !== cronSecret && querySecret !== cronSecret && !isDashboardUser) {
       console.warn("[cron] Unauthorized attempt");
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -99,13 +139,14 @@ export async function POST(req: NextRequest) {
   const mainPrompt = (state.prompt as string) ?? "";
   const activeProviders = (state.activeProviders ?? []) as string[];
 
-  // Build prompt list (same logic as the dashboard's runScheduledBatch)
+  const brandName = brand.brandName?.trim() || "our brand";
   const prompts: string[] =
     customPrompts.length > 0
-      ? customPrompts.map((p: unknown) =>
-          typeof p === "string" ? p : (p as { text: string }).text,
-        )
-      : [mainPrompt];
+      ? customPrompts.map((p: unknown) => {
+          const text = typeof p === "string" ? p : (p as { text: string }).text;
+          return text.replace(/\{brand\}/gi, brandName);
+        })
+      : [mainPrompt.replace(/\{brand\}/gi, brandName)];
 
   const validPrompts = prompts.filter((p): p is string => !!p?.trim());
   if (validPrompts.length === 0) {
@@ -183,7 +224,10 @@ export async function POST(req: NextRequest) {
 
   // ── Detect drift ─────────────────────────────────────────────
   const existingRuns = (state.runs ?? []) as Record<string, unknown>[];
-  const driftAlerts = detectDrift(allRuns as any[], existingRuns as any[]);
+  const driftAlerts = detectDrift(
+    allRuns as Parameters<typeof detectDrift>[0],
+    existingRuns as Parameters<typeof detectDrift>[1],
+  );
 
   // ── Push to in-memory log buffer ──────────────────────────────
   const now = new Date().toISOString();
@@ -215,7 +259,7 @@ export async function POST(req: NextRequest) {
     lastScheduledRun: now,
     driftAlerts: [
       ...driftAlerts,
-      ...((state.driftAlerts ?? []) as any[]),
+      ...((state.driftAlerts ?? []) as ReturnType<typeof detectDrift>),
     ].slice(0, 100),
   };
 

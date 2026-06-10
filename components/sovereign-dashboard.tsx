@@ -13,7 +13,7 @@ import {
   saveSovereignValue,
   clearSovereignStore,
 } from "@/lib/client/sovereign-store";
-import { probeCloudAvailability } from "@/lib/client/cloud-mode";
+import { probeCloudAvailability, isCloudActive } from "@/lib/client/cloud-mode";
 import { DEMO_STATE } from "@/lib/demo-data";
 import { AeoAuditTab } from "@/components/dashboard/tabs/aeo-audit-tab";
 import { AutomationTab } from "@/components/dashboard/tabs/automation-tab-v2";
@@ -550,15 +550,56 @@ export function SovereignDashboard({
   const runScheduledBatch = useCallback(async () => {
     const s = stateRef.current;
     if (busyRef.current) return; // skip if already running
-    const prompts =
-      s.customPrompts.length > 0
-        ? s.customPrompts.map((p) => p.text)
-        : [s.prompt];
-    const providers = s.activeProviders;
-    if (prompts.length === 0 || providers.length === 0) return;
 
     setBusy(true);
     setMessage("Auto-run: Starting scheduled batch…");
+
+    // If cloud is active, run the batch scheduler entirely on the server
+    if (isCloudActive()) {
+      try {
+        const response = await fetch(`/api/cron/run-all?workspace=${activeWsId}`, {
+          method: "POST",
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "Server batch run failed");
+        }
+        setMessage(
+          `Batch run complete: ${data.totalRuns ?? 0} result(s) across ${data.promptsRun ?? 0} prompt(s).`
+        );
+        // Immediately fetch the updated state to sync the dashboard UI
+        const key = storageKeyForWorkspace(activeWsId);
+        const latestState = await loadSovereignValue<AppState>(key, defaultState);
+        if (latestState) {
+          setState((prev) => ({
+            ...prev,
+            ...latestState,
+            runs: latestState.runs ?? prev.runs,
+            lastScheduledRun: latestState.lastScheduledRun ?? prev.lastScheduledRun,
+            driftAlerts: latestState.driftAlerts ?? prev.driftAlerts,
+            battlecards: latestState.battlecards ?? prev.battlecards,
+          }));
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setMessage(`Server batch run failed: ${msg}`);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    // Client-side fallback if cloud is NOT active (IndexedDB local mode)
+    const brandName = s.brand.brandName?.trim() || "our brand";
+    const prompts =
+      s.customPrompts.length > 0
+        ? s.customPrompts.map((p) => p.text.replace(/\{brand\}/gi, brandName))
+        : [s.prompt.replace(/\{brand\}/gi, brandName)];
+    const providers = s.activeProviders;
+    if (prompts.length === 0 || providers.length === 0) {
+      setBusy(false);
+      return;
+    }
 
     const allRuns: ScrapeRun[] = [];
     for (const prompt of prompts) {
@@ -601,9 +642,8 @@ export function SovereignDashboard({
         elapsedSeconds: Math.round((Date.now() - startTs) / 1000),
       }),
     }).catch(() => {});
-
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeWsId]);
 
   /** Set up / tear down the scheduler interval */
   useEffect(() => {
@@ -611,7 +651,8 @@ export function SovereignDashboard({
       clearInterval(schedulerRef.current);
       schedulerRef.current = null;
     }
-    if (!demoMode && state.scheduleEnabled && state.scheduleIntervalMs > 0) {
+    // Only run browser scheduler if database/cloud is NOT active (runs on server in cloud mode)
+    if (!demoMode && !isCloudActive() && state.scheduleEnabled && state.scheduleIntervalMs > 0) {
       schedulerRef.current = setInterval(
         runScheduledBatch,
         state.scheduleIntervalMs,
@@ -623,7 +664,64 @@ export function SovereignDashboard({
         schedulerRef.current = null;
       }
     };
-  }, [state.scheduleEnabled, state.scheduleIntervalMs, runScheduledBatch]);
+  }, [state.scheduleEnabled, state.scheduleIntervalMs, runScheduledBatch, demoMode]);
+
+  /** Keep client state in sync with server-side scheduler worker when cloud is active */
+  useEffect(() => {
+    if (demoMode || !activeWsId || !initialLoadDone.current || !isCloudActive()) return;
+
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const syncState = async () => {
+      // Avoid syncing while a scrape/manual run is in progress
+      if (busyRef.current) return;
+      
+      try {
+        const key = storageKeyForWorkspace(activeWsId);
+        const data = await loadSovereignValue<AppState>(key, defaultState);
+        if (!data) return;
+
+        setState((prev) => {
+          // Compare runs list and schedule fields to see if we need to update
+          const dbRunsCount = data.runs?.length ?? 0;
+          const localRunsCount = prev.runs?.length ?? 0;
+          const dbLastRun = data.lastScheduledRun;
+          const localLastRun = prev.lastScheduledRun;
+          const dbInterval = data.scheduleIntervalMs;
+          const localInterval = prev.scheduleIntervalMs;
+          const dbEnabled = data.scheduleEnabled;
+          const localEnabled = prev.scheduleEnabled;
+          
+          if (
+            dbRunsCount !== localRunsCount || 
+            dbLastRun !== localLastRun ||
+            dbInterval !== localInterval ||
+            dbEnabled !== localEnabled
+          ) {
+            console.log("[dashboard] Syncing state from database (background updates detected)");
+            return {
+              ...prev,
+              runs: data.runs ?? prev.runs,
+              lastScheduledRun: data.lastScheduledRun ?? prev.lastScheduledRun,
+              driftAlerts: data.driftAlerts ?? prev.driftAlerts,
+              scheduleEnabled: data.scheduleEnabled ?? prev.scheduleEnabled,
+              scheduleIntervalMs: data.scheduleIntervalMs ?? prev.scheduleIntervalMs,
+              battlecards: data.battlecards ?? prev.battlecards,
+            };
+          }
+          return prev;
+        });
+      } catch (err) {
+        console.warn("[dashboard] Background sync failed:", err);
+      }
+    };
+
+    timer = setInterval(syncState, 15000); // Poll every 15 seconds
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [activeWsId, demoMode]);
 
   function dismissAlert(id: string) {
     setState((prev) => ({

@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/meers/aeo?workspace=default
+ * GET /api/meera/aeo?workspace=default
  *
  * Returns AEO audit data and SRO (Search Result Optimization) analysis:
  *   - latest AEO audit report (llms.txt, schema, BLUF, headings, etc.)
@@ -39,6 +39,8 @@ export async function GET(req: NextRequest) {
   }
 
   const state = res.value;
+  const brand = (state.brand ?? {}) as { brandName?: string };
+  const brandName = brand.brandName || "your brand";
 
   const auditReport = state.auditReport ?? null;
   const auditUrl = state.auditUrl ?? null;
@@ -48,7 +50,31 @@ export async function GET(req: NextRequest) {
   const sroResults = state.sroResults ?? null;
 
   // Citation opportunities
-  const citationOpportunities = state.citationOpportunities ?? null;
+  let citationOpportunities = state.citationOpportunities ?? null;
+  if (!citationOpportunities && Array.isArray(state.runs)) {
+    const domains = new Set<string>();
+    (state.runs as Array<{ brandMentions?: unknown; sentiment?: string; sources?: string[] }>).forEach((run) => {
+      const brandMentionsCount = Array.isArray(run.brandMentions) ? run.brandMentions.length : 0;
+      if (run.sentiment === "not-mentioned" || brandMentionsCount === 0) {
+        if (Array.isArray(run.sources)) {
+          run.sources.forEach((url: string) => {
+            try {
+              const host = new URL(url).hostname
+                .replace(/^www\./, "")
+                .toLowerCase();
+              domains.add(host);
+            } catch {
+              /* skip */
+            }
+          });
+        }
+      }
+    });
+    citationOpportunities = Array.from(domains).map((domain) => ({
+      domain,
+      description: `Competitor cited but "${brandName}" is not mentioned.`,
+    }));
+  }
 
   return NextResponse.json({
     workspace: wsId,

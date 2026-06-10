@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/meers/summary?workspace=default
+ * GET /api/meera/summary?workspace=default
  *
  * Returns a compact summary of the entire tracker dashboard:
  *   - brand info
