@@ -371,11 +371,14 @@ export async function runAiScraper(
   const cacheKey = buildCacheKey(request);
   const cacheHit = inMemoryCache.get(cacheKey);
   if (cacheHit && cacheHit.expiresAt > Date.now()) {
+    console.log(`[scraper] Cache hit for provider: ${parsed}`);
     return {
       ...cacheHit.value,
       cached: true,
     };
   }
+
+  console.log(`[scraper] Scraping provider: ${parsed} for prompt: "${request.prompt.slice(0, 60)}..."`);
 
   const inputRecord: Record<string, unknown> = {
     url: providerBaseUrl[parsed],
@@ -386,6 +389,8 @@ export async function runAiScraper(
   if (request.country) {
     inputRecord.geolocation = request.country;
   }
+
+  console.log(`[scraper] Calling Bright Data dataset scrape API (dataset: ${datasetId})...`);
 
   const scrapeResponse = await fetch(
     `https://api.brightdata.com/datasets/v3/scrape?dataset_id=${datasetId}&notify=false&include_errors=true&format=json`,
@@ -402,7 +407,9 @@ export async function runAiScraper(
     const pending = (await scrapeResponse.json()) as {
       snapshot_id: string;
     };
+    console.log(`[scraper] Scrape queued (202 accepted). Polling snapshot ${pending.snapshot_id}...`);
     await monitorUntilReady(pending.snapshot_id);
+    console.log(`[scraper] Snapshot ${pending.snapshot_id} ready. Downloading data...`);
     payload = await downloadSnapshot(pending.snapshot_id);
   } else {
     if (!scrapeResponse.ok) {
@@ -448,6 +455,8 @@ export async function runAiScraper(
 
   // Merge and deduplicate
   const allSources = [...new Set([...textSources, ...structuredSources])];
+
+  console.log(`[scraper] Scrape success for ${parsed}. Extracted ${allSources.length} sources and generated response (${answer.length} chars).`);
 
   const normalized: NormalizedScrapeResult = {
     provider: parsed,

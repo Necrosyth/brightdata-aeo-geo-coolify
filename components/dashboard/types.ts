@@ -185,6 +185,9 @@ export type AppState = {
 
   /** Selected LLM model for SRO & analysis */
   selectedModel?: string;
+
+  /** Track if server-side batch run is in progress */
+  batchRunning?: boolean;
 };
 
 export const tabs = [

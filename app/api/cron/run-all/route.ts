@@ -123,6 +123,21 @@ export async function POST(req: NextRequest) {
   }
   const state = stateRes.value as Record<string, unknown>;
 
+  // Check if a batch run is already in progress.
+  if (state.batchRunning === true) {
+    console.log("[cron] A batch run is already in progress. Skipping.");
+    return NextResponse.json(
+      { error: "A batch run is already in progress." },
+      { status: 409 },
+    );
+  }
+
+  // Set batchRunning: true in Neon
+  await kvSet(storageKey, {
+    ...state,
+    batchRunning: true,
+  });
+
   // ── Extract config ───────────────────────────────────────────
   const brand = (state.brand ?? {}) as {
     brandName?: string;
@@ -151,6 +166,11 @@ export async function POST(req: NextRequest) {
   const validPrompts = prompts.filter((p): p is string => !!p?.trim());
   if (validPrompts.length === 0) {
     console.warn("[cron] No prompts configured — nothing to run");
+    // Clear batchRunning flag before returning
+    await kvSet(storageKey, {
+      ...state,
+      batchRunning: false,
+    });
     return NextResponse.json(
       { error: "No prompts configured. Add prompts in the dashboard first." },
       { status: 400 },
@@ -177,97 +197,114 @@ export async function POST(req: NextRequest) {
   // ── Run scrapes ──────────────────────────────────────────────
   const allRuns: Record<string, unknown>[] = [];
   const errors: { prompt: string; provider: string; error: string }[] = [];
+  let driftAlerts: ReturnType<typeof detectDrift> = [];
+  let now = new Date().toISOString();
+  let elapsed = "0.0";
 
   console.log(
     `[cron] Starting batch: ${validPrompts.length} prompt(s) × ${providers.length} provider(s)`,
   );
 
-  for (const prompt of validPrompts) {
-    for (const provider of providers) {
-      const parsed = ProviderEnum.safeParse(provider);
-      if (!parsed.success) continue;
-      try {
-        const result = await runAiScraper({
-          provider: parsed.data,
-          prompt: prompt.trim(),
-          requireSources: true,
-        });
+  try {
+    for (const prompt of validPrompts) {
+      for (const provider of providers) {
+        const parsed = ProviderEnum.safeParse(provider);
+        if (!parsed.success) continue;
+        try {
+          const result = await runAiScraper({
+            provider: parsed.data,
+            prompt: prompt.trim(),
+            requireSources: true,
+          });
 
-        const answerText = result.answer || "";
-        const sourceList = result.sources || [];
+          const answerText = result.answer || "";
+          const sourceList = result.sources || [];
 
-        allRuns.push({
-          provider: result.provider,
-          prompt: result.prompt,
-          answer: answerText,
-          sources: sourceList,
-          createdAt: result.createdAt,
-          visibilityScore: calcVisibilityScore(
-            answerText,
-            sourceList,
-            brandTerms,
-            websiteDomains,
-          ),
-          sentiment: detectSentiment(answerText, brandTerms),
-          brandMentions: findMentions(answerText, brandTerms),
-          competitorMentions: findMentions(answerText, competitorTerms),
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        errors.push({ prompt: prompt.trim(), provider, error: msg });
-        console.error(
-          `[cron] Error scraping ${provider} for "${prompt.slice(0, 60)}": ${msg}`,
-        );
+          allRuns.push({
+            provider: result.provider,
+            prompt: result.prompt,
+            answer: answerText,
+            sources: sourceList,
+            createdAt: result.createdAt,
+            visibilityScore: calcVisibilityScore(
+              answerText,
+              sourceList,
+              brandTerms,
+              websiteDomains,
+            ),
+            sentiment: detectSentiment(answerText, brandTerms),
+            brandMentions: findMentions(answerText, brandTerms),
+            competitorMentions: findMentions(answerText, competitorTerms),
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push({ prompt: prompt.trim(), provider, error: msg });
+          console.error(
+            `[cron] Error scraping ${provider} for "${prompt.slice(0, 60)}": ${msg}`,
+          );
+        }
       }
     }
+
+    // ── Detect drift ─────────────────────────────────────────────
+    const existingRuns = (state.runs ?? []) as Record<string, unknown>[];
+    driftAlerts = detectDrift(
+      allRuns as Parameters<typeof detectDrift>[0],
+      existingRuns as Parameters<typeof detectDrift>[1],
+    );
+
+    // ── Push to in-memory log buffer ──────────────────────────────
+    now = new Date().toISOString();
+    elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+    const { pushLog } = await import("@/lib/server/log-buffer");
+    pushLog({
+      level: errors.length > 0 ? (allRuns.length > 0 ? "warn" : "error") : "info",
+      message:
+        errors.length > 0
+          ? `Batch ran with ${errors.length} error(s): ${allRuns.length} result(s), ${driftAlerts.length} drift alert(s)`
+          : `Batch complete: ${allRuns.length} result(s) across ${validPrompts.length} prompt(s) × ${providers.length} provider(s)`,
+      details:
+        errors.length > 0
+          ? errors
+              .map((e) => `[${e.provider}] ${e.prompt.slice(0, 50)} → ${e.error}`)
+              .join("; ")
+          : undefined,
+      totalRuns: allRuns.length,
+      driftAlerts: driftAlerts.length,
+      errors: errors.length,
+      elapsedSeconds: Number(elapsed),
+    });
+
+  } catch (error) {
+    console.error("[cron] Unhandled error during batch scrape:", error);
+    const msg = error instanceof Error ? error.message : String(error);
+    errors.push({ prompt: "batch_scrape", provider: "all", error: msg });
+  } finally {
+    // ── Save updated state ───────────────────────────────────────
+    // Reload state to avoid race conditions with other updates
+    const finalStateRes = await kvGet<Record<string, unknown>>(storageKey);
+    const finalState = finalStateRes.ok && finalStateRes.value ? finalStateRes.value : state;
+
+    const existingRuns = (finalState.runs ?? []) as Record<string, unknown>[];
+
+    const updatedState = {
+      ...finalState,
+      runs: [...allRuns, ...existingRuns].slice(0, 500),
+      lastScheduledRun: now,
+      driftAlerts: [
+        ...driftAlerts,
+        ...((finalState.driftAlerts ?? []) as ReturnType<typeof detectDrift>),
+      ].slice(0, 100),
+      batchRunning: false,
+    };
+
+    await kvSet(storageKey, updatedState);
+
+    console.log(
+      `[cron] Batch complete: ${allRuns.length} runs, ${driftAlerts.length} drift alert(s), ${errors.length} error(s) in ${elapsed}s`,
+    );
   }
-
-  // ── Detect drift ─────────────────────────────────────────────
-  const existingRuns = (state.runs ?? []) as Record<string, unknown>[];
-  const driftAlerts = detectDrift(
-    allRuns as Parameters<typeof detectDrift>[0],
-    existingRuns as Parameters<typeof detectDrift>[1],
-  );
-
-  // ── Push to in-memory log buffer ──────────────────────────────
-  const now = new Date().toISOString();
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-  const { pushLog } = await import("@/lib/server/log-buffer");
-  pushLog({
-    level: errors.length > 0 ? (allRuns.length > 0 ? "warn" : "error") : "info",
-    message:
-      errors.length > 0
-        ? `Batch ran with ${errors.length} error(s): ${allRuns.length} result(s), ${driftAlerts.length} drift alert(s)`
-        : `Batch complete: ${allRuns.length} result(s) across ${validPrompts.length} prompt(s) × ${providers.length} provider(s)`,
-    details:
-      errors.length > 0
-        ? errors
-            .map((e) => `[${e.provider}] ${e.prompt.slice(0, 50)} → ${e.error}`)
-            .join("; ")
-        : undefined,
-    totalRuns: allRuns.length,
-    driftAlerts: driftAlerts.length,
-    errors: errors.length,
-    elapsedSeconds: Number(elapsed),
-  });
-
-  // ── Save updated state ───────────────────────────────────────
-  const updatedState = {
-    ...state,
-    runs: [...allRuns, ...existingRuns].slice(0, 500),
-    lastScheduledRun: now,
-    driftAlerts: [
-      ...driftAlerts,
-      ...((state.driftAlerts ?? []) as ReturnType<typeof detectDrift>),
-    ].slice(0, 100),
-  };
-
-  await kvSet(storageKey, updatedState);
-
-  console.log(
-    `[cron] Batch complete: ${allRuns.length} runs, ${driftAlerts.length} drift alert(s), ${errors.length} error(s) in ${elapsed}s`,
-  );
 
   // ── Response ─────────────────────────────────────────────────
   return NextResponse.json({

@@ -227,6 +227,7 @@ const defaultState: AppState = {
   lastScheduledRun: null,
   driftAlerts: [],
   selectedModel: "",
+  batchRunning: false,
 };
 
 const tabMeta: Record<
@@ -336,6 +337,8 @@ export function SovereignDashboard({
   const [message, setMessage] = useState(
     demoMode ? "Demo mode — read-only preview" : "",
   );
+  const isCurrentlyBusy = busy || !!state.batchRunning;
+  const displayMessage = state.batchRunning && !busy ? "Scheduled batch run in progress..." : message;
   const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWsId, setActiveWsId] = useState<string>("");
@@ -344,6 +347,17 @@ export function SovereignDashboard({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   /** Guards the save effect */
   const initialLoadDone = useRef(false);
+
+  const activeAbortControllerRef = useRef<AbortController | null>(null);
+
+  const getNewAbortSignal = useCallback((): AbortSignal => {
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    activeAbortControllerRef.current = controller;
+    return controller.signal;
+  }, []);
 
   /** Apply theme class to <html> */
   const applyTheme = useCallback((t: "light" | "dark" | "system") => {
@@ -508,7 +522,7 @@ export function SovereignDashboard({
 
   /** ref to latest callScrapeOne so the scheduler callback doesn't use stale brand terms */
   const callScrapeOneRef = useRef<
-    (prompt: string, provider: Provider) => Promise<ScrapeRun | null>
+    (prompt: string, provider: Provider, signal?: AbortSignal) => Promise<ScrapeRun | null>
   >(
     // placeholder — will be assigned after callScrapeOne is defined
     async () => null,
@@ -554,11 +568,14 @@ export function SovereignDashboard({
     setBusy(true);
     setMessage("Auto-run: Starting scheduled batch…");
 
+    const signal = getNewAbortSignal();
+
     // If cloud is active, run the batch scheduler entirely on the server
     if (isCloudActive()) {
       try {
         const response = await fetch(`/api/cron/run-all?workspace=${activeWsId}`, {
           method: "POST",
+          signal,
         });
         const data = await response.json();
         if (!response.ok) {
@@ -581,8 +598,12 @@ export function SovereignDashboard({
           }));
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setMessage(`Server batch run failed: ${msg}`);
+        if (err instanceof Error && err.name === "AbortError") {
+          console.log("[dashboard] Batch run request cancelled.");
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          setMessage(`Server batch run failed: ${msg}`);
+        }
       } finally {
         setBusy(false);
       }
@@ -604,7 +625,7 @@ export function SovereignDashboard({
     const allRuns: ScrapeRun[] = [];
     for (const prompt of prompts) {
       const results = await Promise.allSettled(
-        providers.map((p) => callScrapeOneRef.current(prompt, p)),
+        providers.map((p) => callScrapeOneRef.current(prompt, p, signal)),
       );
       for (const r of results) {
         if (r.status === "fulfilled" && r.value) allRuns.push(r.value);
@@ -691,12 +712,15 @@ export function SovereignDashboard({
           const localInterval = prev.scheduleIntervalMs;
           const dbEnabled = data.scheduleEnabled;
           const localEnabled = prev.scheduleEnabled;
+          const dbBatchRunning = !!data.batchRunning;
+          const localBatchRunning = !!prev.batchRunning;
           
           if (
             dbRunsCount !== localRunsCount || 
             dbLastRun !== localLastRun ||
             dbInterval !== localInterval ||
-            dbEnabled !== localEnabled
+            dbEnabled !== localEnabled ||
+            dbBatchRunning !== localBatchRunning
           ) {
             console.log("[dashboard] Syncing state from database (background updates detected)");
             return {
@@ -707,6 +731,7 @@ export function SovereignDashboard({
               scheduleEnabled: data.scheduleEnabled ?? prev.scheduleEnabled,
               scheduleIntervalMs: data.scheduleIntervalMs ?? prev.scheduleIntervalMs,
               battlecards: data.battlecards ?? prev.battlecards,
+              batchRunning: data.batchRunning,
             };
           }
           return prev;
@@ -1124,6 +1149,7 @@ export function SovereignDashboard({
   async function callScrapeOne(
     prompt: string,
     provider: Provider,
+    signal?: AbortSignal,
   ): Promise<ScrapeRun | null> {
     if (demoMode) {
       setMessage("Demo mode — API calls are disabled");
@@ -1138,6 +1164,7 @@ export function SovereignDashboard({
           prompt,
           requireSources: true,
         }),
+        signal,
       });
 
       const data = await response.json();
@@ -1181,9 +1208,11 @@ export function SovereignDashboard({
     setBusy(true);
     setMessage(`Running across ${count} model${count > 1 ? "s" : ""}...`);
 
+    const signal = getNewAbortSignal();
+
     try {
       const results = await Promise.allSettled(
-        providers.map((p) => callScrapeOne(prompt, p)),
+        providers.map((p) => callScrapeOne(prompt, p, signal)),
       );
 
       const runs: ScrapeRun[] = results
@@ -1232,9 +1261,11 @@ export function SovereignDashboard({
     setBusy(true);
     setMessage(`Batch: launching ${totalJobs} jobs in parallel...`);
 
+    const signal = getNewAbortSignal();
+
     // Fire ALL prompt × provider combinations at once
     const jobs = prompts.flatMap((prompt) =>
-      providers.map((p) => callScrapeOne(prompt, p)),
+      providers.map((p) => callScrapeOne(prompt, p, signal)),
     );
     const results = await Promise.allSettled(jobs);
 
@@ -1697,7 +1728,7 @@ Now analyze all ${competitorList.length} competitors:`,
         <PromptHubTab
           customPrompts={state.customPrompts}
           brandName={state.brand.brandName}
-          busy={busy}
+          busy={isCurrentlyBusy}
           activeProviderCount={state.activeProviders.length}
           onAddCustomPrompt={addCustomPrompt}
           onRemoveCustomPrompt={removeCustomPrompt}
@@ -1714,7 +1745,7 @@ Now analyze all ${competitorList.length} competitors:`,
           prompt={state.prompt}
           personas={state.personas}
           fanoutPrompts={state.fanoutPrompts}
-          busy={busy}
+          busy={isCurrentlyBusy}
           onPromptChange={(value) =>
             setState((prev) => ({ ...prev, prompt: value }))
           }
@@ -1749,7 +1780,7 @@ Now analyze all ${competitorList.length} competitors:`,
           scheduleIntervalMs={state.scheduleIntervalMs}
           lastScheduledRun={state.lastScheduledRun}
           driftAlerts={state.driftAlerts}
-          busy={busy}
+          busy={isCurrentlyBusy}
           onToggleSchedule={(enabled) =>
             setState((prev) => ({ ...prev, scheduleEnabled: enabled }))
           }
@@ -2202,9 +2233,9 @@ Now analyze all ${competitorList.length} competitors:`,
           </button>
 
           <span
-            className={`rounded-md px-2.5 py-1 text-xs ${busy ? "animate-pulse bg-th-accent-soft text-th-text-accent" : "bg-th-card-alt text-th-text-muted"}`}
+            className={`rounded-md px-2.5 py-1 text-xs ${isCurrentlyBusy ? "animate-pulse bg-th-accent-soft text-th-text-accent" : "bg-th-card-alt text-th-text-muted"}`}
           >
-            {message || "Ready"}
+            {displayMessage || "Ready"}
           </span>
 
           {/* Logout button */}
