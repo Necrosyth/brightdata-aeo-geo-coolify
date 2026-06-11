@@ -66,6 +66,36 @@ function createPool() {
 
 let pool = createPool();
 
+// ── Scheduler log via API ──────────────────────────────────────
+
+/**
+ * Push a log entry to the persistent log store via the server API.
+ * This avoids race conditions between the worker process and the
+ * Next.js server both writing to the same DB key.
+ */
+async function pushSchedulerLog(entry) {
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (CRON_SECRET) {
+      headers["Authorization"] = `Bearer ${CRON_SECRET}`;
+    }
+
+    const res = await fetch(`${BASE_URL}/api/cron/logs`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(entry),
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!res.ok) {
+      log.warn(`Failed to push scheduler log via API: ${res.status}`);
+    }
+  } catch (err) {
+    // Log to console as fallback — don't let log persistence failures crash the worker
+    log.debug(`Log push failed (non-critical): ${err.message}`);
+  }
+}
+
 // ── State helpers ─────────────────────────────────────────────
 async function readScheduleState() {
   if (!pool) return null;
@@ -129,11 +159,14 @@ async function markBatchStarted() {
 
 // ── Trigger batch ──────────────────────────────────────────────
 async function triggerBatch() {
+  const triggerStart = Date.now();
   const url = `${BASE_URL}/api/cron/run-all?workspace=${WORKSPACE}`;
   const headers = { "Content-Type": "application/json" };
   if (CRON_SECRET) {
     headers["Authorization"] = `Bearer ${CRON_SECRET}`;
   }
+
+  log.info(`Triggering batch scrape...`);
 
   try {
     const res = await fetch(url, {
@@ -143,9 +176,16 @@ async function triggerBatch() {
       signal: AbortSignal.timeout(300_000),
     });
 
+    const triggerDuration = Date.now() - triggerStart;
+
     if (!res.ok) {
       const text = await res.text().catch(() => "no body");
       log.error(`Batch trigger failed (${res.status}): ${text.slice(0, 200)}`);
+      await pushSchedulerLog({
+        level: "error",
+        message: `Batch trigger failed: HTTP ${res.status}`,
+        details: text.slice(0, 500),
+      });
       return;
     }
 
@@ -155,13 +195,41 @@ async function triggerBatch() {
         `${data.driftAlertsCreated ?? 0} drift alert(s), ` +
         `${data.elapsedSeconds ?? "?"}s`,
     );
+
+    // The run-all route already pushes a detailed log, but we add a scheduler-level log too
+    await pushSchedulerLog({
+      level: data.errors ? "warn" : "info",
+      message: `Scheduler batch complete: ${data.totalRuns ?? 0} result(s) in ${data.elapsedSeconds ?? "?"}s`,
+      details: [
+        `Trigger: scheduler worker → /api/cron/run-all`,
+        `Prompts: ${data.promptsRun ?? "?"} × Providers: ${data.providersPerPrompt ?? "?"}`,
+        `Results: ${data.totalRuns ?? 0} run(s), ${data.driftAlertsCreated ?? 0} drift alert(s), ${data.errors ?? 0} error(s)`,
+        `Wall time: ${triggerDuration}ms (server processing: ${data.elapsedSeconds ?? "?"}s)`,
+        data.errors ? `Errors: ${JSON.stringify(data.errors)}` : "",
+      ].filter(Boolean).join("\n"),
+      totalRuns: data.totalRuns,
+      driftAlerts: data.driftAlertsCreated,
+      errors: data.errors,
+      elapsedSeconds: data.elapsedSeconds,
+    });
   } catch (err) {
+    const triggerDuration = Date.now() - triggerStart;
     if (err.name === "TimeoutError" || err.name === "AbortError") {
       log.warn("Batch trigger timed out (5 min) — next poll will retry");
+      await pushSchedulerLog({
+        level: "error",
+        message: `Batch trigger timed out after ${triggerDuration}ms`,
+        details: "The /api/cron/run-all endpoint did not respond within 5 minutes. This usually means a Bright Data scrape is hanging or the server is overloaded.",
+      });
     } else if (err.code === "ECONNREFUSED") {
       log.debug("Server not ready yet — skipping this poll cycle");
     } else {
       log.error(`Batch trigger error: ${err.message}`);
+      await pushSchedulerLog({
+        level: "error",
+        message: `Batch trigger error: ${err.message}`,
+        details: `Duration: ${triggerDuration}ms\n${err.stack || ""}`,
+      });
     }
   }
 }
@@ -169,8 +237,12 @@ async function triggerBatch() {
 // ── Main loop ──────────────────────────────────────────────────
 let consecutiveFailures = 0;
 let lastRunTime = 0;
+let totalPolls = 0;
+let totalTriggers = 0;
+let lastStatusLog = 0;
 
 async function tick() {
+  totalPolls++;
   try {
     const state = await readScheduleState();
 
@@ -182,6 +254,17 @@ async function tick() {
       );
     }
 
+    // Periodic status log every 10 minutes
+    if (Date.now() - lastStatusLog > 600_000) {
+      lastStatusLog = Date.now();
+      log.info(
+        `Status: polls=${totalPolls}, triggers=${totalTriggers}, ` +
+          `failures=${consecutiveFailures}, ` +
+          `enabled=${!!state?.scheduleEnabled}, ` +
+          `interval=${state?.scheduleIntervalMs ?? "N/A"}ms`,
+      );
+    }
+
     if (shouldRun(state)) {
       const cooldown = Date.now() - lastRunTime;
       if (cooldown < 10_000) {
@@ -189,9 +272,15 @@ async function tick() {
         return;
       }
 
+      totalTriggers++;
       log.info(
-        `Schedule triggered: running batch (interval=${state.scheduleIntervalMs}ms)`,
+        `Schedule triggered: running batch (interval=${state.scheduleIntervalMs}ms, ` +
+          `last run=${state.lastScheduledRun ?? "never"})`,
       );
+      await pushSchedulerLog({
+        level: "info",
+        message: `Scheduler triggered batch run (interval: ${formatInterval(state.scheduleIntervalMs)}, last run: ${state.lastScheduledRun ? new Date(state.lastScheduledRun).toISOString().slice(0, 19).replace("T", " ") : "never"})`,
+      });
       lastRunTime = Date.now();
       // Mark start in Neon BEFORE trigger so a timeout doesn't cause
       // infinite re-triggers on every poll cycle
@@ -210,6 +299,15 @@ async function tick() {
   }
 }
 
+/** Format interval ms to human-readable */
+function formatInterval(ms) {
+  if (!ms) return "unknown";
+  const hours = ms / 3_600_000;
+  if (hours >= 24) return `${hours / 24}d`;
+  if (hours >= 1) return `${hours}h`;
+  return `${ms / 60_000}m`;
+}
+
 // ── Startup ────────────────────────────────────────────────────
 log.info(
   `Starting (poll=${POLL_INTERVAL}ms, workspace="${WORKSPACE}", ` +
@@ -219,6 +317,20 @@ log.info(
 if (!CRON_SECRET) {
   log.warn("CRON_SECRET is not set — endpoint is unprotected!");
 }
+
+// Log startup to DB
+pushSchedulerLog({
+  level: "info",
+  message: `Scheduler worker started`,
+  details: [
+    `Poll interval: ${POLL_INTERVAL}ms (${POLL_INTERVAL / 1000}s)`,
+    `Workspace: ${WORKSPACE}`,
+    `Endpoint: ${BASE_URL}/api/cron/run-all`,
+    `CRON_SECRET: ${CRON_SECRET ? "configured" : "NOT SET (unprotected)"}`,
+    `PID: ${process.pid}`,
+    `Node: ${process.version}`,
+  ].join("\n"),
+}).catch(() => {});
 
 // Delay first tick to let the Next.js server start
 const startupDelay = Math.min(POLL_INTERVAL, 10_000);
@@ -234,6 +346,10 @@ log.info(
 // ── Graceful shutdown ─────────────────────────────────────────
 process.on("SIGTERM", async () => {
   log.info("Shutting down...");
+  await pushSchedulerLog({
+    level: "info",
+    message: "Scheduler worker shutting down (SIGTERM)",
+  }).catch(() => {});
   if (pool) {
     try {
       await pool.end();
@@ -244,6 +360,10 @@ process.on("SIGTERM", async () => {
 
 process.on("SIGINT", async () => {
   log.info("Shutting down...");
+  await pushSchedulerLog({
+    level: "info",
+    message: "Scheduler worker shutting down (SIGINT)",
+  }).catch(() => {});
   if (pool) {
     try {
       await pool.end();

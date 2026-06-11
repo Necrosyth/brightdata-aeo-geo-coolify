@@ -113,6 +113,32 @@ export function AutomationTab({
         </div>
       </div>
 
+      {/* ── Autonomous Mode Status ── */}
+      <div className="rounded-xl border border-th-accent/30 bg-th-accent-soft/30 p-4">
+        <div className="flex items-center gap-3">
+          <div className={`flex h-10 w-10 items-center justify-center rounded-full text-lg ${scheduleEnabled ? "bg-th-success/20" : "bg-th-card-alt"}`}>
+            {scheduleEnabled ? "🤖" : "⏸️"}
+          </div>
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-th-text">
+              {scheduleEnabled ? "Fully Autonomous Mode Active" : "Autonomous Mode Paused"}
+            </div>
+            <p className="text-xs text-th-text-muted mt-0.5">
+              {scheduleEnabled
+                ? `Scanner runs automatically every ${SCHEDULE_OPTIONS.find((o) => o.value === scheduleIntervalMs)?.label?.toLowerCase() ?? "..."} — no browser tab needed. The scheduler worker runs inside the container and triggers batch scrapes via the server API. All API calls and results are logged below.`
+                : "Enable the scheduler above to run scans automatically on the server. Logs persist across restarts."
+              }
+            </p>
+          </div>
+          {scheduleEnabled && (
+            <div className="flex items-center gap-1.5 rounded-full bg-th-success/20 px-3 py-1">
+              <span className="h-2 w-2 rounded-full bg-th-success animate-pulse" />
+              <span className="text-xs font-semibold text-th-success">LIVE</span>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* ── How it works ── */}
       <div className="rounded-xl border border-th-border bg-th-card-alt p-4">
         <div className="mb-2 text-xs font-medium uppercase tracking-wider text-th-text-muted">How It Works</div>

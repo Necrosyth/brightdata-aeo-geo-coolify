@@ -29,13 +29,14 @@ export function LogsTab() {
     "all",
   );
   const [showTimestamps, setShowTimestamps] = useState(true);
+  const [expandedLog, setExpandedLog] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchLogs = useCallback(async () => {
     try {
-      const res = await fetch("/api/cron/logs?limit=100", {
+      const res = await fetch("/api/cron/logs?limit=300", {
         cache: "no-store",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -131,8 +132,7 @@ export function LogsTab() {
         <div className="rounded-xl border border-th-border bg-th-card p-4">
           <h2 className="text-sm font-semibold text-th-text">Scheduler Logs</h2>
           <p className="mt-1 text-xs text-th-text-muted">
-            Live feed from the in-container scheduler worker. Auto-refreshes
-            every 5s.
+            Persistent logs stored in Neon DB. Auto-refreshes every 5s.
           </p>
         </div>
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-th-border bg-th-card-alt py-16">
@@ -187,8 +187,8 @@ export function LogsTab() {
                 3
               </span>
               <span>
-                Each run produces a log entry with results, drift alerts, and
-                errors.
+                Each run produces a detailed log entry with results, API call
+                details, drift alerts, and errors — persisted to Neon DB.
               </span>
             </div>
           </div>
@@ -204,7 +204,7 @@ export function LogsTab() {
         <div>
           <h2 className="text-sm font-semibold text-th-text">Scheduler Logs</h2>
           <p className="mt-0.5 text-xs text-th-text-muted">
-            {logs.length} event{logs.length !== 1 ? "s" : ""} · live
+            {logs.length} event{logs.length !== 1 ? "s" : ""} · persistent · live
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -262,10 +262,18 @@ export function LogsTab() {
               day: "numeric",
             });
 
+            const isExpanded = expandedLog === entry.id;
+            const hasDetails = !!entry.details;
+
             return (
               <div
                 key={entry.id}
-                className={`group rounded-lg border border-transparent px-3 py-2.5 transition-colors hover:border-th-border ${s.bg}`}
+                className={`group rounded-lg border border-transparent px-3 py-2.5 transition-colors hover:border-th-border ${s.bg} ${hasDetails ? "cursor-pointer" : ""}`}
+                onClick={() => {
+                  if (hasDetails) {
+                    setExpandedLog(isExpanded ? null : entry.id);
+                  }
+                }}
               >
                 <div className="flex items-start gap-3">
                   <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
@@ -278,10 +286,37 @@ export function LogsTab() {
                     <p className="text-sm text-th-text leading-snug">
                       {entry.message}
                     </p>
-                    {entry.details && (
-                      <p className="mt-0.5 text-xs text-th-text-muted leading-relaxed">
-                        {entry.details}
-                      </p>
+                    {entry.details && !isExpanded && (
+                      <button
+                        className="mt-0.5 text-[11px] text-th-text-accent hover:underline"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpandedLog(entry.id);
+                        }}
+                      >
+                        ▸ Show details ({entry.details.split("\n").length} lines)
+                      </button>
+                    )}
+                    {isExpanded && entry.details && (
+                      <div className="mt-2 rounded-md border border-th-border bg-th-card-alt p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-th-text-muted">
+                            Detailed Log
+                          </span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedLog(null);
+                            }}
+                            className="text-[11px] text-th-text-muted hover:text-th-text"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <pre className="whitespace-pre-wrap break-words text-xs text-th-text-secondary leading-relaxed font-mono">
+                          {entry.details}
+                        </pre>
+                      </div>
                     )}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
@@ -353,7 +388,7 @@ export function LogsTab() {
           </span>
         </div>
         <span className="text-[11px] text-th-text-muted/50">
-          auto-refreshes every 5s
+          persistent · auto-refreshes every 5s
         </span>
       </div>
     </div>

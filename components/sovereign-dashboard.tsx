@@ -223,7 +223,7 @@ const defaultState: AppState = {
   auditUrl: "https://example.com",
   auditReport: null,
   scheduleEnabled: false,
-  scheduleIntervalMs: 21600000,
+  scheduleIntervalMs: 43200000,
   lastScheduledRun: null,
   driftAlerts: [],
   selectedModel: "",

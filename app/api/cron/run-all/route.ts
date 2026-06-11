@@ -197,19 +197,42 @@ export async function POST(req: NextRequest) {
   // ── Run scrapes ──────────────────────────────────────────────
   const allRuns: Record<string, unknown>[] = [];
   const errors: { prompt: string; provider: string; error: string }[] = [];
+  const apiCallLog: {
+    provider: string;
+    prompt: string;
+    status: "ok" | "error";
+    durationMs: number;
+    visibilityScore?: number;
+    sentiment?: string;
+    sourcesCount?: number;
+    error?: string;
+  }[] = [];
   let driftAlerts: ReturnType<typeof detectDrift> = [];
   let now = new Date().toISOString();
   let elapsed = "0.0";
+
+  const { pushLog } = await import("@/lib/server/log-buffer");
 
   console.log(
     `[cron] Starting batch: ${validPrompts.length} prompt(s) × ${providers.length} provider(s)`,
   );
 
+  // Log batch start
+  await pushLog({
+    level: "info",
+    message: `Batch started: ${validPrompts.length} prompt(s) × ${providers.length} provider(s) — ${brand.brandName || "default"} workspace`,
+    details: `Providers: ${providers.join(", ")}\nPrompts: ${validPrompts.map((p) => p.slice(0, 80)).join(" | ")}`,
+  });
+
   try {
+    let scrapeIndex = 0;
     for (const prompt of validPrompts) {
       for (const provider of providers) {
+        scrapeIndex++;
         const parsed = ProviderEnum.safeParse(provider);
         if (!parsed.success) continue;
+
+        const scrapeStart = Date.now();
         try {
           const result = await runAiScraper({
             provider: parsed.data,
@@ -217,8 +240,16 @@ export async function POST(req: NextRequest) {
             requireSources: true,
           });
 
+          const scrapeDuration = Date.now() - scrapeStart;
           const answerText = result.answer || "";
           const sourceList = result.sources || [];
+          const visScore = calcVisibilityScore(
+            answerText,
+            sourceList,
+            brandTerms,
+            websiteDomains,
+          );
+          const sent = detectSentiment(answerText, brandTerms);
 
           allRuns.push({
             provider: result.provider,
@@ -226,21 +257,38 @@ export async function POST(req: NextRequest) {
             answer: answerText,
             sources: sourceList,
             createdAt: result.createdAt,
-            visibilityScore: calcVisibilityScore(
-              answerText,
-              sourceList,
-              brandTerms,
-              websiteDomains,
-            ),
-            sentiment: detectSentiment(answerText, brandTerms),
+            visibilityScore: visScore,
+            sentiment: sent,
             brandMentions: findMentions(answerText, brandTerms),
             competitorMentions: findMentions(answerText, competitorTerms),
           });
+
+          apiCallLog.push({
+            provider,
+            prompt: prompt.trim().slice(0, 80),
+            status: "ok",
+            durationMs: scrapeDuration,
+            visibilityScore: visScore,
+            sentiment: sent,
+            sourcesCount: sourceList.length,
+          });
+
+          console.log(
+            `[cron] ✓ ${scrapeIndex}/${validPrompts.length * providers.length} ${provider} (${scrapeDuration}ms) score=${visScore} sent=${sent} src=${sourceList.length}`,
+          );
         } catch (err) {
+          const scrapeDuration = Date.now() - scrapeStart;
           const msg = err instanceof Error ? err.message : String(err);
           errors.push({ prompt: prompt.trim(), provider, error: msg });
+          apiCallLog.push({
+            provider,
+            prompt: prompt.trim().slice(0, 80),
+            status: "error",
+            durationMs: scrapeDuration,
+            error: msg.slice(0, 200),
+          });
           console.error(
-            `[cron] Error scraping ${provider} for "${prompt.slice(0, 60)}": ${msg}`,
+            `[cron] ✗ ${scrapeIndex}/${validPrompts.length * providers.length} ${provider} (${scrapeDuration}ms) ERROR: ${msg.slice(0, 120)}`,
           );
         }
       }
@@ -253,23 +301,43 @@ export async function POST(req: NextRequest) {
       existingRuns as Parameters<typeof detectDrift>[1],
     );
 
-    // ── Push to in-memory log buffer ──────────────────────────────
+    // ── Push detailed log entry ──────────────────────────────────
     now = new Date().toISOString();
     elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
-    const { pushLog } = await import("@/lib/server/log-buffer");
-    pushLog({
+    const successCount = apiCallLog.filter((c) => c.status === "ok").length;
+    const avgScore =
+      allRuns.length > 0
+        ? Math.round(
+            allRuns.reduce((a, r) => a + ((r as { visibilityScore?: number }).visibilityScore ?? 0), 0) /
+              allRuns.length,
+          )
+        : 0;
+    const avgDuration =
+      apiCallLog.length > 0
+        ? Math.round(
+            apiCallLog.reduce((a, c) => a + c.durationMs, 0) / apiCallLog.length,
+          )
+        : 0;
+
+    const logDetails = [
+      `Results: ${allRuns.length} run(s), ${successCount} succeeded, ${errors.length} failed`,
+      `Scores: avg=${avgScore}% ${allRuns.length > 0 ? `min=${Math.min(...allRuns.map((r) => (r as { visibilityScore?: number }).visibilityScore ?? 0))}% max=${Math.max(...allRuns.map((r) => (r as { visibilityScore?: number }).visibilityScore ?? 0))}%` : ""}`,
+      `Timing: total=${elapsed}s avg_per_call=${avgDuration}ms`,
+      driftAlerts.length > 0 ? `Drift: ${driftAlerts.length} alert(s) — ${driftAlerts.map((d) => `${d.prompt.slice(0, 40)} (${d.provider}): ${d.oldScore}→${d.newScore}`).join("; ")}` : "",
+      errors.length > 0 ? `Errors:\n${errors.map((e) => `  [${e.provider}] ${e.prompt.slice(0, 50)} → ${e.error.slice(0, 100)}`).join("\n")}` : "",
+      `API calls:\n${apiCallLog.map((c) => `  [${c.status}] ${c.prompt.slice(0, 40)} via ${c.provider} — ${c.durationMs}ms${c.visibilityScore !== undefined ? ` score=${c.visibilityScore}` : ""}${c.error ? ` err=${c.error.slice(0, 80)}` : ""}`).join("\n")}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    await pushLog({
       level: errors.length > 0 ? (allRuns.length > 0 ? "warn" : "error") : "info",
       message:
         errors.length > 0
-          ? `Batch ran with ${errors.length} error(s): ${allRuns.length} result(s), ${driftAlerts.length} drift alert(s)`
-          : `Batch complete: ${allRuns.length} result(s) across ${validPrompts.length} prompt(s) × ${providers.length} provider(s)`,
-      details:
-        errors.length > 0
-          ? errors
-              .map((e) => `[${e.provider}] ${e.prompt.slice(0, 50)} → ${e.error}`)
-              .join("; ")
-          : undefined,
+          ? `Batch complete with ${errors.length} error(s): ${allRuns.length} result(s), ${driftAlerts.length} drift alert(s) in ${elapsed}s`
+          : `Batch complete: ${allRuns.length} result(s) across ${validPrompts.length} prompt(s) × ${providers.length} provider(s) in ${elapsed}s`,
+      details: logDetails,
       totalRuns: allRuns.length,
       driftAlerts: driftAlerts.length,
       errors: errors.length,
@@ -280,6 +348,14 @@ export async function POST(req: NextRequest) {
     console.error("[cron] Unhandled error during batch scrape:", error);
     const msg = error instanceof Error ? error.message : String(error);
     errors.push({ prompt: "batch_scrape", provider: "all", error: msg });
+
+    await pushLog({
+      level: "error",
+      message: `Batch failed: ${msg.slice(0, 200)}`,
+      details: msg,
+      totalRuns: 0,
+      errors: 1,
+    });
   } finally {
     // ── Save updated state ───────────────────────────────────────
     // Reload state to avoid race conditions with other updates
