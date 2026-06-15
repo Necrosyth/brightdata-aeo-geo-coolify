@@ -65,7 +65,7 @@ export function getNeonPool(): Pool | null {
   try {
     pool = new Pool({
       connectionString,
-      ssl: { rejectUnauthorized: false },
+      ssl: false,
     });
 
     pool.on("error", (err) => {
