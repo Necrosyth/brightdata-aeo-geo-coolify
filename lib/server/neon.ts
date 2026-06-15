@@ -8,7 +8,7 @@ async function ensureTablesExist(p: Pool) {
   tablesInitialized = true; // Guard to prevent concurrent init attempts
 
   try {
-    // Enable uuid-ossp or pgcrypto extension if needed for gen_random_uuid()
+    // Enable pgcrypto extension if needed for gen_random_uuid()
     await p.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`);
 
     // Create public.kv_store table
@@ -34,6 +34,18 @@ async function ensureTablesExist(p: Pool) {
         UNIQUE(source_url, section_name)
       );
     `);
+
+    // Create public.migrations_meta table (tracks applied migrations)
+    await p.query(`
+      CREATE TABLE IF NOT EXISTS public.migrations_meta (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        checksum VARCHAR(64) NOT NULL DEFAULT '',
+        duration_ms INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+
     console.log("Database tables initialized successfully");
   } catch (error) {
     console.error("Failed to initialize database tables:", error);
@@ -101,4 +113,23 @@ export async function queryAll<T extends QueryResultRow = any>(
 ): Promise<T[]> {
   const result = await query<T>(text, values);
   return result.rows;
+}
+
+/**
+ * Test the database connection and return diagnostic info.
+ */
+export async function testConnection(): Promise<{
+  ok: boolean;
+  version?: string;
+  error?: string;
+}> {
+  try {
+    const result = await queryOne<{ version: string }>("SELECT version()");
+    return { ok: true, version: result?.version };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }

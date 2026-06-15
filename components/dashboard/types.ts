@@ -205,6 +205,7 @@ export const tabs = [
   "Automation",
   "Logs",
   "Website Data",
+  "Database Migrations",
   "Documentation",
 ] as const;
 

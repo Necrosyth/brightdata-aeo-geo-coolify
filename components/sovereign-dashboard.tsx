@@ -30,6 +30,7 @@ import { DocumentationTab } from "@/components/dashboard/tabs/documentation-tab"
 import { SROAnalysisTab } from "@/components/dashboard/tabs/sro-analysis-tab";
 import WebsiteDataTab from "@/components/dashboard/tabs/website-data-tab";
 import { LogsTab } from "@/components/dashboard/tabs/logs-tab";
+import { MigrationsTab } from "@/components/dashboard/tabs/migrations-tab";
 import type {
   AppState,
   Battlecard,
@@ -166,6 +167,15 @@ const tabIcons: Record<TabKey, ReactNode> = {
     <Icon>
       <path d="M12 2v4M12 18v4" />
       <path d="M9 11h6M8 7h8M8 15h8" />
+    </Icon>
+  ),
+  "Database Migrations": (
+    <Icon>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
+      <polyline points="10 9 9 9 8 9" />
     </Icon>
   ),
 };
@@ -324,6 +334,12 @@ const tabMeta: Record<
     details:
       "Scrape and manage website content from Hypotenuse Analytics. View, edit, and delete website sections. Automatically sync home page and FAQ content.",
   },
+  "Database Migrations": {
+    title: "DB Migrations",
+    tooltip: "Manage database schema migrations.",
+    details:
+      "View and manage database schema migrations. Run pending migrations, apply or revert individual ones, and see connection status — all from within the app.",
+  },
 };
 
 export function SovereignDashboard({
@@ -338,7 +354,10 @@ export function SovereignDashboard({
     demoMode ? "Demo mode — read-only preview" : "",
   );
   const isCurrentlyBusy = busy || !!state.batchRunning;
-  const displayMessage = state.batchRunning && !busy ? "Scheduled batch run in progress..." : message;
+  const displayMessage =
+    state.batchRunning && !busy
+      ? "Scheduled batch run in progress..."
+      : message;
   const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWsId, setActiveWsId] = useState<string>("");
@@ -522,7 +541,11 @@ export function SovereignDashboard({
 
   /** ref to latest callScrapeOne so the scheduler callback doesn't use stale brand terms */
   const callScrapeOneRef = useRef<
-    (prompt: string, provider: Provider, signal?: AbortSignal) => Promise<ScrapeRun | null>
+    (
+      prompt: string,
+      provider: Provider,
+      signal?: AbortSignal,
+    ) => Promise<ScrapeRun | null>
   >(
     // placeholder — will be assigned after callScrapeOne is defined
     async () => null,
@@ -573,26 +596,33 @@ export function SovereignDashboard({
     // If cloud is active, run the batch scheduler entirely on the server
     if (isCloudActive()) {
       try {
-        const response = await fetch(`/api/cron/run-all?workspace=${activeWsId}`, {
-          method: "POST",
-          signal,
-        });
+        const response = await fetch(
+          `/api/cron/run-all?workspace=${activeWsId}`,
+          {
+            method: "POST",
+            signal,
+          },
+        );
         const data = await response.json();
         if (!response.ok) {
           throw new Error(data.error || "Server batch run failed");
         }
         setMessage(
-          `Batch run complete: ${data.totalRuns ?? 0} result(s) across ${data.promptsRun ?? 0} prompt(s).`
+          `Batch run complete: ${data.totalRuns ?? 0} result(s) across ${data.promptsRun ?? 0} prompt(s).`,
         );
         // Immediately fetch the updated state to sync the dashboard UI
         const key = storageKeyForWorkspace(activeWsId);
-        const latestState = await loadSovereignValue<AppState>(key, defaultState);
+        const latestState = await loadSovereignValue<AppState>(
+          key,
+          defaultState,
+        );
         if (latestState) {
           setState((prev) => ({
             ...prev,
             ...latestState,
             runs: latestState.runs ?? prev.runs,
-            lastScheduledRun: latestState.lastScheduledRun ?? prev.lastScheduledRun,
+            lastScheduledRun:
+              latestState.lastScheduledRun ?? prev.lastScheduledRun,
             driftAlerts: latestState.driftAlerts ?? prev.driftAlerts,
             battlecards: latestState.battlecards ?? prev.battlecards,
           }));
@@ -673,7 +703,12 @@ export function SovereignDashboard({
       schedulerRef.current = null;
     }
     // Only run browser scheduler if database/cloud is NOT active (runs on server in cloud mode)
-    if (!demoMode && !isCloudActive() && state.scheduleEnabled && state.scheduleIntervalMs > 0) {
+    if (
+      !demoMode &&
+      !isCloudActive() &&
+      state.scheduleEnabled &&
+      state.scheduleIntervalMs > 0
+    ) {
       schedulerRef.current = setInterval(
         runScheduledBatch,
         state.scheduleIntervalMs,
@@ -685,18 +720,24 @@ export function SovereignDashboard({
         schedulerRef.current = null;
       }
     };
-  }, [state.scheduleEnabled, state.scheduleIntervalMs, runScheduledBatch, demoMode]);
+  }, [
+    state.scheduleEnabled,
+    state.scheduleIntervalMs,
+    runScheduledBatch,
+    demoMode,
+  ]);
 
   /** Keep client state in sync with server-side scheduler worker when cloud is active */
   useEffect(() => {
-    if (demoMode || !activeWsId || !initialLoadDone.current || !isCloudActive()) return;
+    if (demoMode || !activeWsId || !initialLoadDone.current || !isCloudActive())
+      return;
 
     let timer: ReturnType<typeof setInterval> | null = null;
 
     const syncState = async () => {
       // Avoid syncing while a scrape/manual run is in progress
       if (busyRef.current) return;
-      
+
       try {
         const key = storageKeyForWorkspace(activeWsId);
         const data = await loadSovereignValue<AppState>(key, defaultState);
@@ -714,22 +755,25 @@ export function SovereignDashboard({
           const localEnabled = prev.scheduleEnabled;
           const dbBatchRunning = !!data.batchRunning;
           const localBatchRunning = !!prev.batchRunning;
-          
+
           if (
-            dbRunsCount !== localRunsCount || 
+            dbRunsCount !== localRunsCount ||
             dbLastRun !== localLastRun ||
             dbInterval !== localInterval ||
             dbEnabled !== localEnabled ||
             dbBatchRunning !== localBatchRunning
           ) {
-            console.log("[dashboard] Syncing state from database (background updates detected)");
+            console.log(
+              "[dashboard] Syncing state from database (background updates detected)",
+            );
             return {
               ...prev,
               runs: data.runs ?? prev.runs,
               lastScheduledRun: data.lastScheduledRun ?? prev.lastScheduledRun,
               driftAlerts: data.driftAlerts ?? prev.driftAlerts,
               scheduleEnabled: data.scheduleEnabled ?? prev.scheduleEnabled,
-              scheduleIntervalMs: data.scheduleIntervalMs ?? prev.scheduleIntervalMs,
+              scheduleIntervalMs:
+                data.scheduleIntervalMs ?? prev.scheduleIntervalMs,
               battlecards: data.battlecards ?? prev.battlecards,
               batchRunning: data.batchRunning,
             };
@@ -1853,6 +1897,10 @@ Now analyze all ${competitorList.length} competitors:`,
 
     if (activeTab === "Website Data") {
       return <WebsiteDataTab />;
+    }
+
+    if (activeTab === "Database Migrations") {
+      return <MigrationsTab />;
     }
 
     if (activeTab === "Documentation") {

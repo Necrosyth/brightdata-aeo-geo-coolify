@@ -2,7 +2,7 @@
  * Scheduler Worker — Persistent in-container process
  *
  * Runs alongside the Next.js server and monitors the scheduling config
- * stored in Neon.  When the dashboard's "Auto-Run Scheduler" is enabled,
+ * stored in the database.  When the dashboard's "Auto-Run Scheduler" is enabled,
  * this worker automatically triggers batch scrapes on the configured interval.
  *
  * This eliminates the need for external cron services (Coolify cron, Vercel
@@ -10,7 +10,7 @@
  * is alive.
  *
  * Environment variables:
- *   DATABASE_URL   – Neon PostgreSQL connection string (required)
+ *   DATABASE_URL   – PostgreSQL connection string (required)
  *   CRON_SECRET    – Secret for the cron endpoint (required)
  *   POLL_INTERVAL  – How often to check state (ms, default: 30_000 = 30s)
  *   WORKSPACE      – Workspace ID to monitor (default: "default")
@@ -139,7 +139,7 @@ function shouldRun(state) {
 }
 
 /**
- * Update lastScheduledRun in Neon BEFORE triggering the batch.
+ * Update lastScheduledRun in the database BEFORE triggering the batch.
  * This prevents the worker from re-triggering on every poll cycle
  * if the batch fails or times out (which keeps credits safe).
  */
@@ -206,7 +206,9 @@ async function triggerBatch() {
         `Results: ${data.totalRuns ?? 0} run(s), ${data.driftAlertsCreated ?? 0} drift alert(s), ${data.errors ?? 0} error(s)`,
         `Wall time: ${triggerDuration}ms (server processing: ${data.elapsedSeconds ?? "?"}s)`,
         data.errors ? `Errors: ${JSON.stringify(data.errors)}` : "",
-      ].filter(Boolean).join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n"),
       totalRuns: data.totalRuns,
       driftAlerts: data.driftAlertsCreated,
       errors: data.errors,
@@ -219,7 +221,8 @@ async function triggerBatch() {
       await pushSchedulerLog({
         level: "error",
         message: `Batch trigger timed out after ${triggerDuration}ms`,
-        details: "The /api/cron/run-all endpoint did not respond within 5 minutes. This usually means a Bright Data scrape is hanging or the server is overloaded.",
+        details:
+          "The /api/cron/run-all endpoint did not respond within 5 minutes. This usually means a Bright Data scrape is hanging or the server is overloaded.",
       });
     } else if (err.code === "ECONNREFUSED") {
       log.debug("Server not ready yet — skipping this poll cycle");
@@ -282,7 +285,7 @@ async function tick() {
         message: `Scheduler triggered batch run (interval: ${formatInterval(state.scheduleIntervalMs)}, last run: ${state.lastScheduledRun ? new Date(state.lastScheduledRun).toISOString().slice(0, 19).replace("T", " ") : "never"})`,
       });
       lastRunTime = Date.now();
-      // Mark start in Neon BEFORE trigger so a timeout doesn't cause
+      // Mark start in DB BEFORE trigger so a timeout doesn't cause
       // infinite re-triggers on every poll cycle
       await markBatchStarted();
       await triggerBatch();
