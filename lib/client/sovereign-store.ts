@@ -1,7 +1,5 @@
 "use client";
 
-import { isCloudActive } from "./cloud-mode";
-
 /**
  * Storage abstraction for the geo-aeo-tracker app.
  *
@@ -41,13 +39,16 @@ async function cloudDelete(key: string): Promise<void> {
  * Load state directly from Neon. Returns the fallback value when:
  * - The key doesn't exist in the DB
  * - The server is unavailable (network error / cold-start)
+ *
+ * Always attempts the API call. Falls back gracefully on error.
  */
 export async function loadSovereignValue<T>(
   key: string,
   fallback: T,
 ): Promise<T> {
-  if (!isCloudActive()) return fallback;
-
+  // Always attempt cloud fetch — don't gate on probe result.
+  // If the server has no DB, the API returns 501 and cloudGet throws,
+  // which is caught here and returns the fallback gracefully.
   try {
     const cloudValue = await cloudGet<T>(key);
     return cloudValue !== null && cloudValue !== undefined
@@ -60,22 +61,24 @@ export async function loadSovereignValue<T>(
 
 /**
  * Save state directly to Neon.
+ * Try the save — if the server has no DB, it fails silently.
  */
 export async function saveSovereignValue<T>(
   key: string,
   value: T,
 ): Promise<void> {
-  if (!isCloudActive()) return;
-
-  await cloudPut(key, value);
+  try {
+    await cloudPut(key, value);
+  } catch {
+    // Server without DB returns 501, which throws.
+    // Silently ignore — data is ephemeral.
+  }
 }
 
 /**
  * Delete a key from Neon.
  */
 export async function clearSovereignStore(key: string): Promise<void> {
-  if (!isCloudActive()) return;
-
   try {
     await cloudDelete(key);
   } catch (err) {

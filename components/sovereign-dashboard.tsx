@@ -13,7 +13,7 @@ import {
   saveSovereignValue,
   clearSovereignStore,
 } from "@/lib/client/sovereign-store";
-import { probeCloudAvailability, isCloudActive } from "@/lib/client/cloud-mode";
+import { probeWithRetry, isCloudActive } from "@/lib/client/cloud-mode";
 import { DEMO_STATE } from "@/lib/demo-data";
 import { AeoAuditTab } from "@/components/dashboard/tabs/aeo-audit-tab";
 import { AutomationTab } from "@/components/dashboard/tabs/automation-tab-v2";
@@ -405,14 +405,16 @@ export function SovereignDashboard({
 
   /** Probe cloud availability + load workspaces + theme on mount */
   useEffect(() => {
-    // Sequential init: probe first so cloud availability is known before any
-    // data loads, preventing race conditions where default state overwrites
-    // real data in Neon.
+    // Start probe in background (no longer blocks data loads since
+    // sovereign-store always attempts API calls regardless of probe result).
+    const probePromise = probeWithRetry(3, 3000);
+
+    if (demoMode) {
+      probePromise.catch(() => {});
+      return;
+    }
+
     const initialize = async () => {
-      await probeCloudAvailability();
-
-      if (demoMode) return;
-
       // Load theme from Neon
       const savedTheme = await loadSovereignValue<string>(THEME_KEY, "system");
       const t = savedTheme as "light" | "dark" | "system" | null;
@@ -448,6 +450,13 @@ export function SovereignDashboard({
       }
     };
     initialize();
+
+    // Wait for probe in the background (just to update the module-level _probed)
+    probePromise
+      .then(() => {
+        // Probe completed — this updates _probed which enables polling
+      })
+      .catch(() => {});
   }, [applyTheme]);
 
   /** Load app state for active workspace */
@@ -516,7 +525,34 @@ export function SovereignDashboard({
 
   useEffect(() => {
     if (demoMode || !activeWsId || !initialLoadDone.current) return;
-    saveSovereignValue(storageKeyForWorkspace(activeWsId), state);
+
+    const doSave = async () => {
+      try {
+        // Read current DB state to avoid overwriting cron-added runs
+        const dbState = await loadSovereignValue<AppState>(
+          storageKeyForWorkspace(activeWsId),
+          defaultState,
+        );
+
+        // If the DB has more runs than local state, the cron likely added
+        // new results. Keep the DB runs (they contain fresh scrape data)
+        // but apply local state changes on top.
+        const safeState =
+          dbState &&
+          Array.isArray(dbState.runs) &&
+          dbState.runs.length > state.runs.length
+            ? { ...state, runs: dbState.runs }
+            : state;
+
+        await saveSovereignValue(storageKeyForWorkspace(activeWsId), safeState);
+      } catch {
+        // Fall back to simple save
+        await saveSovereignValue(storageKeyForWorkspace(activeWsId), state);
+      }
+    };
+
+    doSave();
+
     // Update workspace brandName if changed and sync metadata to cloud
     if (state.brand.brandName) {
       setWorkspaces((prev) => {
@@ -744,7 +780,10 @@ export function SovereignDashboard({
         if (!data) return;
 
         setState((prev) => {
-          // Compare runs list and schedule fields to see if we need to update
+          // Only sync when DB has MORE runs than local (cron added results)
+          // or when schedule/batchRunning fields changed.
+          // Never REDUCE runs — that could happen if the API call fails
+          // and loadSovereignValue falls back to the empty defaultState.
           const dbRunsCount = data.runs?.length ?? 0;
           const localRunsCount = prev.runs?.length ?? 0;
           const dbLastRun = data.lastScheduledRun;
@@ -756,19 +795,20 @@ export function SovereignDashboard({
           const dbBatchRunning = !!data.batchRunning;
           const localBatchRunning = !!prev.batchRunning;
 
-          if (
-            dbRunsCount !== localRunsCount ||
+          const runsChanged = dbRunsCount > localRunsCount;
+          const otherChanged =
             dbLastRun !== localLastRun ||
             dbInterval !== localInterval ||
             dbEnabled !== localEnabled ||
-            dbBatchRunning !== localBatchRunning
-          ) {
+            dbBatchRunning !== localBatchRunning;
+
+          if (runsChanged || otherChanged) {
             console.log(
               "[dashboard] Syncing state from database (background updates detected)",
             );
             return {
               ...prev,
-              runs: data.runs ?? prev.runs,
+              runs: runsChanged ? (data.runs ?? prev.runs) : prev.runs,
               lastScheduledRun: data.lastScheduledRun ?? prev.lastScheduledRun,
               driftAlerts: data.driftAlerts ?? prev.driftAlerts,
               scheduleEnabled: data.scheduleEnabled ?? prev.scheduleEnabled,

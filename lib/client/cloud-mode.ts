@@ -14,12 +14,15 @@ let _probed: boolean | null = null;
 /**
  * Probe the server to check if cloud storage is actually configured.
  * Call this once on app startup. Stores the result in a module-level cache.
+ *
+ * Uses a generous timeout (15s) to accommodate Neon cold-starts where
+ * the first database query can take several seconds.
  */
 export async function probeCloudAvailability(): Promise<boolean> {
   try {
-    // Timeout after 3s so this doesn't block rendering
+    // 15s timeout — Neon cold-starts can be slow on the first query
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const res = await fetch("/api/state?key=__probe__", {
       method: "GET",
       cache: "no-store",
@@ -30,10 +33,31 @@ export async function probeCloudAvailability(): Promise<boolean> {
     // Any other response (200, 400, etc.) means the server has a DB
     _probed = res.status !== 501;
   } catch {
-    // Network error or timeout — assume cloud is unavailable
+    // Network error or timeout — assume cloud is unavailable for now
     _probed = false;
   }
   return _probed;
+}
+
+/**
+ * Retry the probe up to `retries` times with a delay between attempts.
+ * Returns the probe result.
+ */
+export async function probeWithRetry(
+  retries = 3,
+  delayMs = 3000,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const result = await probeCloudAvailability();
+    if (result) return true;
+    if (attempt < retries - 1) {
+      console.log(
+        `[cloud-mode] Probe attempt ${attempt + 1} failed, retrying in ${delayMs}ms...`,
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  return false;
 }
 
 export function isCloudAvailable(): boolean {
