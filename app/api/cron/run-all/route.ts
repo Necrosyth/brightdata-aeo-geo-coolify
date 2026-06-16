@@ -123,19 +123,44 @@ export async function POST(req: NextRequest) {
   }
   const state = stateRes.value as Record<string, unknown>;
 
+  const { pushLog } = await import("@/lib/server/log-buffer");
+
   // Check if a batch run is already in progress.
+  // Auto-recover stale locks: if batchRunning has been true for >30 minutes,
+  // treat it as a stuck/abandoned lock and clear it.
+  const BATCH_STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
   if (state.batchRunning === true) {
-    console.log("[cron] A batch run is already in progress. Skipping.");
-    return NextResponse.json(
-      { error: "A batch run is already in progress." },
-      { status: 409 },
+    const batchStartedAt = state.batchStartedAt
+      ? new Date(state.batchStartedAt as string).getTime()
+      : 0;
+    const lockAge = batchStartedAt ? Date.now() - batchStartedAt : Infinity;
+
+    if (lockAge < BATCH_STALE_THRESHOLD_MS) {
+      console.log(
+        `[cron] A batch run is already in progress (lock age: ${Math.round(lockAge / 1000)}s). Skipping.`,
+      );
+      return NextResponse.json(
+        { error: "A batch run is already in progress." },
+        { status: 409 },
+      );
+    }
+
+    // Stale lock detected — clear it and proceed
+    console.warn(
+      `[cron] Stale batchRunning lock detected (age: ${Math.round(lockAge / 1000)}s). Auto-recovering.`,
     );
+    await pushLog({
+      level: "warn",
+      message: `Auto-recovered stale batch lock (age: ${Math.round(lockAge / 1000)}s)`,
+      details: `batchRunning was stuck at true since ${state.batchStartedAt ?? "unknown"}. Clearing and proceeding.`,
+    });
   }
 
-  // Set batchRunning: true in Neon
+  // Set batchRunning: true in Neon with timestamp for stale detection
   await kvSet(storageKey, {
     ...state,
     batchRunning: true,
+    batchStartedAt: new Date().toISOString(),
   });
 
   // ── Extract config ───────────────────────────────────────────
@@ -210,8 +235,6 @@ export async function POST(req: NextRequest) {
   let driftAlerts: ReturnType<typeof detectDrift> = [];
   let now = new Date().toISOString();
   let elapsed = "0.0";
-
-  const { pushLog } = await import("@/lib/server/log-buffer");
 
   console.log(
     `[cron] Starting batch: ${validPrompts.length} prompt(s) × ${providers.length} provider(s)`,
@@ -373,6 +396,7 @@ export async function POST(req: NextRequest) {
         ...((finalState.driftAlerts ?? []) as ReturnType<typeof detectDrift>),
       ].slice(0, 100),
       batchRunning: false,
+      batchStartedAt: null,
     };
 
     await kvSet(storageKey, updatedState);

@@ -8,11 +8,13 @@ type AutomationTabProps = {
   lastScheduledRun: string | null;
   driftAlerts: DriftAlert[];
   busy: boolean;
+  batchRunning?: boolean;
   onToggleSchedule: (enabled: boolean) => void;
   onIntervalChange: (interval: ScheduleInterval) => void;
   onRunNow: () => void;
   onDismissAlert: (id: string) => void;
   onDismissAllAlerts: () => void;
+  onResetBatch: () => void;
 };
 
 export function AutomationTab({
@@ -21,11 +23,13 @@ export function AutomationTab({
   lastScheduledRun,
   driftAlerts,
   busy,
+  batchRunning,
   onToggleSchedule,
   onIntervalChange,
   onRunNow,
   onDismissAlert,
   onDismissAllAlerts,
+  onResetBatch,
 }: AutomationTabProps) {
   const [showDismissed, setShowDismissed] = useState(false);
 
@@ -103,13 +107,24 @@ export function AutomationTab({
               </span>
             </>
           )}
-          <button
-            onClick={onRunNow}
-            disabled={busy}
-            className="ml-auto rounded-lg bg-th-accent px-3 py-1.5 text-xs font-medium text-th-text-inverse hover:brightness-110 transition disabled:opacity-50"
-          >
-            {busy ? "Running…" : "Run Now"}
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            {batchRunning && (
+              <button
+                onClick={onResetBatch}
+                className="rounded-lg border border-th-danger/30 bg-th-danger-soft px-3 py-1.5 text-xs font-medium text-th-danger hover:bg-th-danger/20 transition"
+                title="Clear stuck batchRunning lock and resume automation"
+              >
+                🔓 Reset Stuck Batch
+              </button>
+            )}
+            <button
+              onClick={onRunNow}
+              disabled={busy}
+              className="rounded-lg bg-th-accent px-3 py-1.5 text-xs font-medium text-th-text-inverse hover:brightness-110 transition disabled:opacity-50"
+            >
+              {busy ? "Running…" : "Run Now"}
+            </button>
+          </div>
         </div>
       </div>
 

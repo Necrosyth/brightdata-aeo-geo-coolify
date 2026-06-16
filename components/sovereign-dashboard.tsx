@@ -1865,6 +1865,7 @@ Now analyze all ${competitorList.length} competitors:`,
           lastScheduledRun={state.lastScheduledRun}
           driftAlerts={state.driftAlerts}
           busy={isCurrentlyBusy}
+          batchRunning={state.batchRunning}
           onToggleSchedule={(enabled) =>
             setState((prev) => ({ ...prev, scheduleEnabled: enabled }))
           }
@@ -1874,6 +1875,28 @@ Now analyze all ${competitorList.length} competitors:`,
           onRunNow={runScheduledBatch}
           onDismissAlert={dismissAlert}
           onDismissAllAlerts={dismissAllAlerts}
+          onResetBatch={async () => {
+            try {
+              const res = await fetch(
+                `/api/cron/reset-batch?workspace=${activeWsId}`,
+                { method: "POST" },
+              );
+              const data = await res.json();
+              if (res.ok) {
+                setState((prev) => ({
+                  ...prev,
+                  batchRunning: false,
+                }));
+                setMessage(data.message || "Batch lock cleared.");
+              } else {
+                setMessage(`Reset failed: ${data.error || "Unknown error"}`);
+              }
+            } catch (err) {
+              setMessage(
+                `Reset failed: ${err instanceof Error ? err.message : "Network error"}`,
+              );
+            }
+          }}
         />
       );
     }

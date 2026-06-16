@@ -157,6 +157,44 @@ async function markBatchStarted() {
   }
 }
 
+// ── Stale batch recovery ─────────────────────────────────────
+const BATCH_STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Check for a stuck batchRunning flag and clear it if stale.
+ * This is a defensive measure — the /api/cron/run-all route also
+ * does stale detection, but if the server process crashed the lock
+ * would persist forever without this.
+ */
+async function recoverStaleBatch(state) {
+  if (!pool || !state || state.batchRunning !== true) return false;
+
+  const batchStartedAt = state.batchStartedAt;
+  const lockAge = batchStartedAt
+    ? Date.now() - new Date(batchStartedAt).getTime()
+    : Infinity; // Old lock without timestamp — treat as stale
+
+  if (lockAge < BATCH_STALE_THRESHOLD_MS) return false;
+
+  log.warn(`Stale batch lock detected (age: ${Math.round(lockAge / 1000)}s). Clearing.`);
+  try {
+    await pool.query(
+      `UPDATE public.kv_store SET value = value - 'batchRunning' - 'batchStartedAt' WHERE key = $1`,
+      [STORAGE_KEY],
+    );
+    log.info(`Cleared stale batch lock (was stuck since ${batchStartedAt})`);
+    await pushSchedulerLog({
+      level: "warn",
+      message: `Auto-recovered stale batch lock (age: ${Math.round(lockAge / 1000)}s)`,
+      details: `batchRunning was stuck at true since ${batchStartedAt}. Cleared by scheduler worker.`,
+    });
+    return true;
+  } catch (err) {
+    log.error(`Failed to clear stale batch lock: ${err.message}`);
+    return false;
+  }
+}
+
 // ── Trigger batch ──────────────────────────────────────────────
 async function triggerBatch() {
   const triggerStart = Date.now();
@@ -269,6 +307,15 @@ async function tick() {
     }
 
     if (shouldRun(state)) {
+      // Before triggering, try to recover a stale batch lock
+      if (state.batchRunning === true) {
+        const recovered = await recoverStaleBatch(state);
+        if (recovered) {
+          // Re-read state after clearing the lock
+          state = await readScheduleState();
+        }
+      }
+
       const cooldown = Date.now() - lastRunTime;
       if (cooldown < 10_000) {
         log.debug("Skipping — too soon since last trigger (cooldown)");
