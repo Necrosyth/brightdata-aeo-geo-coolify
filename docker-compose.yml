@@ -15,22 +15,7 @@ services:
       timeout: 10s
       retries: 3
     environment:
-      - OPENCODE_ZEN_API_KEY
-      - NVIDIA_API_KEY
-      - GEMINI_API_KEY
-      - BRIGHT_DATA_KEY
-      - BRIGHT_DATA_DATASET_CHATGPT
-      - BRIGHT_DATA_DATASET_PERPLEXITY
-      - BRIGHT_DATA_DATASET_COPILOT
-      - BRIGHT_DATA_DATASET_GEMINI
-      - BRIGHT_DATA_DATASET_GOOGLE_AI
-      - BRIGHT_DATA_DATASET_GROK
       - DATABASE_URL=postgresql://legaluser:legalpass@db:5432/llm_tracker
-      - DASHBOARD_USERNAME
-      - DASHBOARD_PASSWORD
-      - AUTH_SECRET
-      - CRON_SECRET
-      - NEXT_PUBLIC_DEMO_ONLY
     restart: unless-stopped
     logging:
       driver: "json-file"
