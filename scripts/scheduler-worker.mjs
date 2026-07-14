@@ -210,8 +210,8 @@ async function triggerBatch() {
     const res = await fetch(url, {
       method: "POST",
       headers,
-      // Timeout after 5 minutes — Bright Data scrapes can be slow
-      signal: AbortSignal.timeout(300_000),
+      // Timeout after 30 minutes — Bright Data scrapes can be slow when queued
+      signal: AbortSignal.timeout(1800_000),
     });
 
     const triggerDuration = Date.now() - triggerStart;
@@ -255,12 +255,12 @@ async function triggerBatch() {
   } catch (err) {
     const triggerDuration = Date.now() - triggerStart;
     if (err.name === "TimeoutError" || err.name === "AbortError") {
-      log.warn("Batch trigger timed out (5 min) — next poll will retry");
+      log.warn("Batch trigger timed out (30 min) — next poll will retry");
       await pushSchedulerLog({
         level: "error",
         message: `Batch trigger timed out after ${triggerDuration}ms`,
         details:
-          "The /api/cron/run-all endpoint did not respond within 5 minutes. This usually means a Bright Data scrape is hanging or the server is overloaded.",
+          "The /api/cron/run-all endpoint did not respond within 30 minutes. This usually means Bright Data scrapes are heavily queued.",
       });
     } else if (err.code === "ECONNREFUSED") {
       log.debug("Server not ready yet — skipping this poll cycle");
