@@ -5,6 +5,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: geo-aeo-tracker
+    depends_on:
+      - db
     ports:
       - "3040:3040"
     healthcheck:
@@ -23,7 +25,7 @@ services:
       - BRIGHT_DATA_DATASET_GEMINI
       - BRIGHT_DATA_DATASET_GOOGLE_AI
       - BRIGHT_DATA_DATASET_GROK
-      - DATABASE_URL
+      - DATABASE_URL=postgresql://legaluser:legalpass@db:5432/llm_tracker
       - DASHBOARD_USERNAME
       - DASHBOARD_PASSWORD
       - AUTH_SECRET
@@ -35,3 +37,17 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  db:
+    image: postgres:15-alpine
+    container_name: geo-aeo-tracker-db
+    environment:
+      POSTGRES_USER: legaluser
+      POSTGRES_PASSWORD: legalpass
+      POSTGRES_DB: llm_tracker
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
